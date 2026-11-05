@@ -7,12 +7,15 @@ const { normalize } = require('../lib/flows');
 const { computeQuote, quoteToColumns } = require('../lib/premium');
 const { signToken, verifyToken } = require('../lib/auth');
 const { randomCode } = require('../lib/storage');
+const { insuredPrefill } = require('../lib/prefill');
 const { samples } = require('../scripts/sample-data');
 
 test('Aadhaar keeps only the last 4 digits (first 8 hidden)', () => {
   assert.equal(maskAadhaar('652134215432'), 'XXXXXXXX5432');
   assert.equal(maskAadhaar('6521 3421 5432'), 'XXXXXXXX5432');
   assert.equal(maskAadhaar(''), null);
+  assert.equal(maskAadhaar('XXXXXXXX5432'), 'XXXXXXXX5432', 'an already masked value is kept, not re-masked');
+  assert.equal(maskAadhaar('xxxxxxxx5432'), 'XXXXXXXX5432');
 });
 
 test('PAN keeps first 2 and last 1 character', () => {
@@ -116,4 +119,23 @@ test('short codes are 8 characters, URL safe and differ', () => {
   const codes = new Set(Array.from({ length: 500 }, () => randomCode(8)));
   assert.equal(codes.size, 500);
   codes.forEach((c) => assert.match(c, /^[0-9A-Za-z]{8}$/));
+});
+
+test('prefill for flow 3 comes from flows 1 and 2, only ever masks Aadhaar, and always has every key', () => {
+  const p = insuredPrefill({ full_name: 'Aditya Kumar', dob: '22-05-1989', gender: 'Male', marital_status: 'Married', occupation: 'Service', aadhaar: 'XXXXXXXX5432', nominee_name: 'Ankita', nominee_relation: 'Spouse' });
+  assert.deepEqual(p, { p1_name: 'Aditya Kumar', p1_dob: '1989-05-22', p1_gender: 'Male', p1_relation: 'Self', p1_marital_status: 'Married', p1_occupation: 'Service', p1_aadhaar: 'XXXXXXXX5432', p1_aadhaar_editable: false, p2_name: 'Ankita', p2_relation: 'Spouse' });
+  assert.ok(!/\d{12}/.test(JSON.stringify(p)), 'only the masked Aadhaar is ever prefilled');
+  const none = insuredPrefill(null);
+  assert.equal(Object.keys(none).length, 10);
+  assert.equal(none.p1_aadhaar_editable, true, 'nothing on file: the field stays editable');
+  assert.ok(Object.entries(none).filter(([k]) => k !== 'p1_aadhaar_editable').every(([, v]) => v === ''));
+  const odd = insuredPrefill({ full_name: 'X', gender: 'Other', marital_status: 'Complicated', occupation: 'Astronaut', aadhaar: '123456789012', nominee_relation: 'Father', nominee_name: 'Y' });
+  assert.equal(odd.p1_gender, ''); assert.equal(odd.p1_marital_status, ''); assert.equal(odd.p1_occupation, '');
+  assert.equal(odd.p1_aadhaar, '', 'an unmasked value is never passed on'); assert.equal(odd.p1_aadhaar_editable, true); assert.equal(odd.p2_name, '', 'only a spouse nominee is prefilled as person 2');
+});
+
+test('submitting the prefilled masked Aadhaar keeps it; typing a new number masks the new one', () => {
+  const base = { persons: '1', p1_dob: '1989-05-22', p1_sum_insured: 'Rs 5,00,000' };
+  assert.equal(normalize('insured', { ...base, p1_aadhaar: 'XXXXXXXX5432' }).patch.p1_aadhaar, 'XXXXXXXX5432');
+  assert.equal(normalize('insured', { ...base, p1_aadhaar: '111122223333' }).patch.p1_aadhaar, 'XXXXXXXX3333');
 });

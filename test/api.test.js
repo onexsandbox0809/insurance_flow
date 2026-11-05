@@ -131,6 +131,24 @@ test('end to end: six flows -> quote -> PDF -> documents -> dashboard', async (t
     assert.equal((await call(q, { method: 'POST', headers: KEY, body: { phone_number: '919000000000' } })).status, 404);
   });
 
+  await t.test('GET /api/prefill returns flow 1 data (masked Aadhaar) for the phone, ready for flow_action_payload', async () => {
+    const pf = require('../api/prefill');
+    assert.equal((await call(pf, { method: 'GET', query: { phone_number: PHONE } })).status, 401);
+    const ok = await call(pf, { method: 'GET', headers: KEY, query: { phone_number: PHONE } });
+    assert.equal(ok.status, 200); assert.equal(ok.json.found, true);
+    assert.equal(ok.json.data.p1_name, 'Aditya Kumar');
+    assert.equal(ok.json.data.p1_dob, '1989-05-22');
+    assert.equal(ok.json.data.p1_relation, 'Self');
+    assert.equal(ok.json.data.p1_aadhaar, 'XXXXXXXX5432');
+    assert.equal(ok.json.data.p1_aadhaar_editable, false);
+    assert.equal(ok.json.data.p2_name, 'Ankita');
+    assert.deepEqual(ok.json.flow_action_payload, { screen: 'INSURED_COUNT', data: ok.json.data });
+    assert.ok(!/\d{12}/.test(JSON.stringify(ok.json)), 'never a full Aadhaar number');
+    const unknown = await call(pf, { method: 'GET', headers: KEY, query: { phone_number: '919000011111' } });
+    assert.equal(unknown.json.found, false); assert.equal(Object.keys(unknown.json.data).length, 10); assert.equal(unknown.json.data.p1_aadhaar_editable, true);
+    assert.equal((await call(pf, { method: 'GET', headers: KEY, query: { phone_number: PHONE, flow: 'covers' } })).status, 400);
+  });
+
   await t.test('proposal PDF is stored and shared as a short URL', () => {
     const url = r.covers.json.proposal_pdf_url;
     assert.match(url, /^https:\/\/app\.test\/p\/[A-Za-z0-9]{8}$/);
@@ -247,4 +265,19 @@ test('10 digit mobile numbers get the 91 prefix', async () => {
   const fake = setup();
   await flowCall('personal', { headers: KEY, body: { phone_number: '9217090193', full_name: 'X', dob: '1990-01-01', mobile: '9217090193' } });
   assert.equal(fake.tables.proposals[0].wa_id, '919217090193');
+});
+
+test('greyed-out Aadhaar is not submitted: the flow 1 value is kept for the proposer only; submitted values are accepted as sent', async () => {
+  const fake = setup();
+  mockOnex();
+  await runFlows();
+  const again = (extra) => flowCall('insured', { headers: KEY, body: { phone_number: PHONE, persons: '1', p1_dob: '1989-05-22', p1_sum_insured: 'Rs 5,00,000', ...extra } });
+  await again({ p1_relation: 'Self', p1_aadhaar: '' });
+  assert.equal(fake.tables.proposals[0].p1_aadhaar, 'XXXXXXXX5432', 'empty (greyed out) keeps the flow 1 value');
+  await again({ p1_relation: 'Self' });
+  assert.equal(fake.tables.proposals[0].p1_aadhaar, 'XXXXXXXX5432', 'missing keeps the flow 1 value');
+  await again({ p1_relation: 'Self', p1_aadhaar: '999988887777' });
+  assert.equal(fake.tables.proposals[0].p1_aadhaar, 'XXXXXXXX7777', 'a submitted number is accepted (and masked); no server-side lock');
+  await again({ p1_relation: 'Spouse', p1_aadhaar: '' });
+  assert.ok(!fake.tables.proposals[0].p1_aadhaar, 'not the proposer: the proposer Aadhaar is not copied');
 });
