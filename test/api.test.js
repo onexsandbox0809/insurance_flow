@@ -7,6 +7,13 @@ const { setup, call, PNG } = require('./helpers');
 const KEY = { 'x-api-key': 'flow-secret' };
 const PHONE = '919217090193';
 
+function flowCall(name, options = {}) {
+  return call(require('../api/flows/[flow]'), {
+    ...options,
+    query: { ...(options.query || {}), flow: name },
+  });
+}
+
 function mockOnex({ failIds = [] } = {}) {
   const log = [];
   const resp = (status, body, type) => ({
@@ -34,7 +41,7 @@ function mockOnex({ failIds = [] } = {}) {
 }
 
 async function runFlows(h, phone = PHONE) {
-  const post = (name, body) => call(require(`../api/flows/${name}`), { headers: KEY, body: { phone_number: phone, ...body } });
+  const post = (name, body) => flowCall(name, { headers: KEY, body: { phone_number: phone, ...body } });
   const r = {};
   r.personal = await post('personal', { full_name: 'Aditya Kumar', dob: '1989-05-22', gender: 'Male', marital_status: 'Married', occupation: 'Service', pan: 'ANOPC2357P', aadhaar: '652134215432', pin: '122101', city: 'Gurgaon', state: 'Haryana', village: 'Gurgaon', address: 'G 1901, BPTP', servicing_office: 'DO 30', mobile: '9560458200', email: 'a@example.com', contact_consent: true });
   r.nominee = await post('nominee', { nominee_name: 'Ankita', nominee_relation: 'Spouse', nominee_address: 'G 1901', nominee_contact: '9810011223' });
@@ -55,19 +62,19 @@ const flow7Body = () => {
 
 test('flow API rejects calls without the api key', async () => {
   setup();
-  const r = await call(require('../api/flows/personal'), { body: { phone_number: PHONE, full_name: 'x' } });
+  const r = await flowCall('personal', { body: { phone_number: PHONE, full_name: 'x' } });
   assert.equal(r.status, 401);
-  const g = await call(require('../api/flows/personal'), { method: 'GET', headers: KEY });
+  const g = await flowCall('personal', { method: 'GET', headers: KEY });
   assert.equal(g.status, 405);
 });
 
 test('validation: phone, required fields, bad persons', async () => {
   setup();
-  const h = require('../api/flows/personal');
+  const h = (req, res) => require('../api/flows/[flow]')({ ...req, query: { ...(req.query || {}), flow: 'personal' } }, res);
   assert.equal((await call(h, { headers: KEY, body: { full_name: 'x' } })).status, 400);
   const miss = await call(h, { headers: KEY, body: { phone_number: PHONE, full_name: 'x' } });
   assert.equal(miss.status, 422); assert.deepEqual(miss.json.missing, ['dob', 'mobile']);
-  const bad = await call(require('../api/flows/insured'), { headers: KEY, body: { phone_number: PHONE, persons: '3', p1_dob: '1990-01-01', p1_sum_insured: 'Rs 5,00,000' } });
+  const bad = await flowCall('insured', { headers: KEY, body: { phone_number: PHONE, persons: '3', p1_dob: '1990-01-01', p1_sum_insured: 'Rs 5,00,000' } });
   assert.equal(bad.status, 422);
 });
 
@@ -135,7 +142,7 @@ test('end to end: six flows -> quote -> PDF -> documents -> dashboard', async (t
   });
 
   const no = r.personal.json.proposal_no;
-  const docs = await call(require('../api/flows/documents'), { headers: KEY, body: flow7Body() });
+  const docs = await flowCall('documents', { headers: KEY, body: flow7Body() });
 
   await t.test('documents: API 1 then API 2 for each file, strictly one after the other', () => {
     assert.equal(docs.status, 200, docs.text);
@@ -172,7 +179,7 @@ test('end to end: six flows -> quote -> PDF -> documents -> dashboard', async (t
 
   await t.test('re-sending the same media ids does not download again', async () => {
     log.length = 0;
-    const again = await call(require('../api/flows/documents'), { headers: KEY, body: flow7Body() });
+    const again = await flowCall('documents', { headers: KEY, body: flow7Body() });
     assert.equal(again.json.stored, 6); assert.equal(log.length, 0);
     assert.equal(fake.tables.proposal_documents.length, 6);
   });
@@ -214,7 +221,7 @@ test('end to end: six flows -> quote -> PDF -> documents -> dashboard', async (t
   });
 
   await t.test('a finished proposal is closed: the next personal flow opens a new one', async () => {
-    const next = await call(require('../api/flows/personal'), { headers: KEY, body: { phone_number: PHONE, full_name: 'Aditya Kumar', dob: '1989-05-22', mobile: '9560458200' } });
+    const next = await flowCall('personal', { headers: KEY, body: { phone_number: PHONE, full_name: 'Aditya Kumar', dob: '1989-05-22', mobile: '9560458200' } });
     assert.notEqual(next.json.proposal_no, no);
     assert.equal(fake.tables.proposals.length, 2);
   });
@@ -224,7 +231,7 @@ test('documents: one failing media id does not stop the others, and is reported'
   const fake = setup();
   mockOnex({ failIds: ['4039060513069724'] });
   await runFlows();
-  const res = await call(require('../api/flows/documents'), { headers: KEY, body: flow7Body() });
+  const res = await flowCall('documents', { headers: KEY, body: flow7Body() });
   assert.equal(res.json.ok, false);
   assert.equal(res.json.stored, 5); assert.equal(res.json.failed, 1);
   const bad = res.json.documents.find((d) => d.status === 'failed');
@@ -238,6 +245,6 @@ test('documents: one failing media id does not stop the others, and is reported'
 
 test('10 digit mobile numbers get the 91 prefix', async () => {
   const fake = setup();
-  await call(require('../api/flows/personal'), { headers: KEY, body: { phone_number: '9217090193', full_name: 'X', dob: '1990-01-01', mobile: '9217090193' } });
+  await flowCall('personal', { headers: KEY, body: { phone_number: '9217090193', full_name: 'X', dob: '1990-01-01', mobile: '9217090193' } });
   assert.equal(fake.tables.proposals[0].wa_id, '919217090193');
 });

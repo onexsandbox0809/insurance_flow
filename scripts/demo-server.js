@@ -30,7 +30,7 @@ samples.forEach((p) => p.flows_completed.forEach((f, i) => fake.tables.flow_subm
 const routes = {
   '/api/auth/login': 'auth/login', '/api/dashboard/list': 'dashboard/list', '/api/dashboard/proposal': 'dashboard/proposal',
   '/api/dashboard/regenerate-pdf': 'dashboard/regenerate-pdf', '/api/d': 'd', '/api/p': 'p',
-  ...Object.fromEntries(['personal', 'nominee', 'insured', 'medical', 'covers', 'documents'].map((f) => [`/api/flows/${f}`, `flows/${f}`])),
+  ...Object.fromEntries(['personal', 'nominee', 'insured', 'medical', 'covers', 'documents'].map((f) => [`/api/flows/${f}`, 'flows/[flow]'])),
 };
 const types = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript' };
 
@@ -43,6 +43,8 @@ http.createServer(async (req, res) => {
     const chunks = []; for await (const c of req) chunks.push(c);
     const raw = Buffer.concat(chunks).toString();
     req.body = raw ? JSON.parse(raw) : undefined; req.query = Object.fromEntries(url.searchParams);
+    const flowMatch = p.match(/^\/api\/flows\/([^/]+)$/);
+    if (flowMatch) req.query.flow = flowMatch[1];
     res.status = (s) => { res.statusCode = s; return res; };
     return require(`../api/${routes[p]}`)(req, res);
   }
