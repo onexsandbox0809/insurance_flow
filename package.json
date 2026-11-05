@@ -5,7 +5,7 @@
   "description": "WhatsApp Flow data service, premium quote engine, proposal PDF and dashboard (Vercel + Supabase)",
   "license": "UNLICENSED",
   "engines": {
-    "node": "20.x"
+    "node": "24.x"
   },
   "scripts": {
     "test": "node --test",
