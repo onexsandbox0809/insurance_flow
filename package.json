@@ -4,7 +4,7 @@
   "private": true,
   "description": "WhatsApp Flow data service, premium quote engine, proposal PDF and dashboard (Vercel + Supabase)",
   "license": "UNLICENSED",
-  "engines": { "node": ">=18" },
+  "engines": { "node": "20.x" },
   "scripts": {
     "test": "node --test",
     "seed:sql": "node scripts/make-seed.js > supabase/seed.sql",
