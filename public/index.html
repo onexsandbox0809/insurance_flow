@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Proposal desk</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main id="login" class="login" hidden>
+    <section class="login-card" aria-labelledby="login-title">
+      <h1 id="login-title">Proposal desk</h1>
+      <p class="login-sub">Sign in to review customer proposals, premiums and documents.</p>
+      <form id="login-form" autocomplete="on">
+        <label for="login_id">Login id</label>
+        <input id="login_id" name="login_id" autocomplete="username" required autofocus>
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+        <p id="login-error" class="form-error" role="alert" hidden></p>
+        <button class="btn primary" type="submit">Sign in</button>
+      </form>
+    </section>
+  </main>
+
+  <div id="app" class="app" hidden>
+    <header class="topbar">
+      <div class="brand">Proposal desk</div>
+      <dl class="stats" id="stats" aria-label="Summary"></dl>
+      <div class="who"><span id="who"></span><button class="btn quiet" id="signout" type="button">Sign out</button></div>
+    </header>
+
+    <div class="layout" id="layout">
+      <aside class="list-pane" aria-label="Customers">
+        <div class="search">
+          <input id="search" type="search" placeholder="Search name, phone, proposal no." aria-label="Search proposals">
+          <div class="chips" id="chips" role="group" aria-label="Filter by status">
+            <button class="chip on" data-status="" type="button">All</button>
+            <button class="chip" data-status="draft" type="button">In progress</button>
+            <button class="chip" data-status="quoted" type="button">Quoted</button>
+            <button class="chip" data-status="completed" type="button">Complete</button>
+          </div>
+        </div>
+        <ul id="rows" class="rows"></ul>
+        <div class="list-foot"><span id="count"></span><button class="btn quiet" id="more" type="button" hidden>Show more</button></div>
+      </aside>
+
+      <section class="detail-pane" id="detail" aria-live="polite">
+        <div class="empty">
+          <h2>Pick a customer</h2>
+          <p>Their proposal, premium and documents open here.</p>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>

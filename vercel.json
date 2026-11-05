@@ -1,0 +1,20 @@
+{
+  "functions": {
+    "api/flows/documents.js": { "maxDuration": 60 },
+    "api/flows/*.js": { "maxDuration": 30 },
+    "api/dashboard/regenerate-pdf.js": { "maxDuration": 30 }
+  },
+  "rewrites": [
+    { "source": "/d/:code", "destination": "/api/d?code=:code" },
+    { "source": "/p/:code", "destination": "/api/p?code=:code" }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "same-origin" }
+      ]
+    }
+  ]
+}

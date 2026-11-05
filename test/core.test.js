@@ -1,0 +1,119 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { maskAadhaar, maskPan } = require('../lib/mask');
+const { toDDMMYYYY, nowIST, ageOn, parseDDMMYYYY, formatIST } = require('../lib/dates');
+const { normalize } = require('../lib/flows');
+const { computeQuote, quoteToColumns } = require('../lib/premium');
+const { signToken, verifyToken } = require('../lib/auth');
+const { randomCode } = require('../lib/storage');
+const { samples } = require('../scripts/sample-data');
+
+test('Aadhaar keeps only the last 4 digits (first 8 hidden)', () => {
+  assert.equal(maskAadhaar('652134215432'), 'XXXXXXXX5432');
+  assert.equal(maskAadhaar('6521 3421 5432'), 'XXXXXXXX5432');
+  assert.equal(maskAadhaar(''), null);
+});
+
+test('PAN keeps first 2 and last 1 character', () => {
+  assert.equal(maskPan('ANOPC2357P'), 'ANXXXXXXXP');
+  assert.equal(maskPan('anopc2357p'), 'ANXXXXXXXP');
+  assert.equal(maskPan(null), null);
+});
+
+test('dates become DD-MM-YYYY', () => {
+  assert.equal(toDDMMYYYY('1989-05-22'), '22-05-1989');
+  assert.equal(toDDMMYYYY('22/05/1989'), '22-05-1989');
+  assert.equal(toDDMMYYYY('22-5-1989'), '22-05-1989');
+  assert.equal(toDDMMYYYY('2026-11-05T10:00:00Z'), '05-11-2026');
+  assert.equal(toDDMMYYYY('garbage'), null);
+  assert.equal(parseDDMMYYYY('31-02-2026'), null);
+});
+
+test('time zone is India: 2026-11-05 20:00 UTC is 06-11-2026 01-30 IST, format hh-mm', () => {
+  const n = nowIST(new Date('2026-11-05T20:00:00Z'));
+  assert.equal(n.date, '06-11-2026');
+  assert.equal(n.time, '01-30');
+  assert.equal(formatIST('2026-11-05T20:00:00Z'), '06-11-2026 01-30');
+});
+
+test('age is calculated in completed years on the IST date', () => {
+  const ref = new Date('2026-11-05T06:00:00Z');
+  assert.equal(ageOn('22-05-1989', ref), 37);
+  assert.equal(ageOn('05-11-1990', ref), 36);   // birthday today
+  assert.equal(ageOn('06-11-1990', ref), 35);   // birthday tomorrow
+});
+
+test('normalize masks identifiers, converts dates and fills "No" for every disease', () => {
+  const a = normalize('personal', { full_name: ' A ', dob: '1989-05-22', pan: 'ANOPC2357P', aadhaar: '652134215432', mobile: '9560458200', contact_consent: 'true', junk: 'x' });
+  assert.deepEqual(a.patch, { full_name: 'A', dob: '22-05-1989', pan: 'ANXXXXXXXP', aadhaar: 'XXXXXXXX5432', mobile: '9560458200', contact_consent: true });
+  const m = normalize('medical', { any_condition: 'No' });
+  assert.equal(m.patch.p1_diabetes, 'No'); assert.equal(m.patch.p1_asthma, 'No');
+  const i = normalize('insured', { persons: '1', p1_dob: '1989-05-22', p1_sum_insured: 'Rs 5,00,000', p2_name: 'ignored' });
+  assert.equal(i.patch.p2_name, null);
+  assert.equal(normalize('insured', { persons: '3' }).errors.length, 1);
+});
+
+test('premium: documented example is internally consistent', () => {
+  const q = computeQuote(samples[0], new Date('2026-11-05T06:00:00Z'));
+  assert.equal(q.ready, true);
+  const t = q.totals;
+  assert.equal(Math.round((t.net + t.gst) * 100) / 100, t.annual);
+  assert.equal(Math.round(t.net * 0.18 * 100) / 100, t.gst);
+  assert.equal(q.options.annual, t.annual);
+  assert.ok(q.options.monthly * 12 > t.annual, 'monthly instalments carry a loading');
+  assert.ok(q.options.half_yearly * 2 > t.annual);
+  // person 1 loadings: BMI 25.88 (+5%), hypertension (+15%), alcohol (+5%)
+  const labels = q.persons[0].loadings.map((l) => l.label);
+  assert.ok(labels.some((l) => l.startsWith('BMI')));
+  assert.ok(labels.includes('Condition: Hypertension'));
+  assert.ok(labels.includes('Habit: Alcohol'));
+  assert.ok(q.persons[1].family_discount > 0, '2nd person gets the family discount');
+  assert.ok(q.addons.find((a) => a.code === 'maternity').amount > 0, 'female aged 35 is eligible');
+});
+
+test('premium: risk moves it the right way', () => {
+  const ref = new Date('2026-11-05T06:00:00Z');
+  const base = { persons: 1, p1_dob: '01-01-1990', p1_sum_insured: 'Rs 5,00,000', p1_height: 1.7, p1_weight: 65, p1_occupation: 'Service' };
+  const clean = computeQuote(base, ref).totals.annual;
+  assert.ok(computeQuote({ ...base, p1_dob: '01-01-1960' }, ref).totals.annual > clean, 'older costs more');
+  assert.ok(computeQuote({ ...base, p1_sum_insured: 'Rs 10,00,000' }, ref).totals.annual > clean, 'higher cover costs more');
+  assert.ok(computeQuote({ ...base, p1_diabetes: 'Yes' }, ref).totals.annual > clean, 'condition loads');
+  assert.ok(computeQuote({ ...base, p1_tobacco: 'Yes', p1_cigarettes: 'Yes' }, ref).totals.annual > clean, 'habits load');
+  assert.ok(computeQuote({ ...base, p1_weight: 110 }, ref).totals.annual > clean, 'high BMI loads');
+  assert.ok(computeQuote({ ...base, p1_restoration: 'Yes' }, ref).totals.annual > clean, 'add-on adds');
+  // everything at once is capped, never above +75% for conditions/habits
+  const all = computeQuote({ ...base, p1_diabetes: 'Yes', p1_hypertension: 'Yes', p1_epilepsy: 'Yes', p1_haemolytic_anaemia: 'Yes', p1_tobacco: 'Yes', p1_cigarettes: 'Yes', p1_alcohol: 'Yes' }, ref);
+  const medPct = all.persons[0].loadings.filter((l) => /^(Condition|Habit)/.test(l.label)).reduce((s, l) => s + l.pct, 0);
+  assert.ok(medPct <= 0.7501);
+});
+
+test('premium: not ready without date of birth / sum insured, ready after', () => {
+  assert.equal(computeQuote({ persons: 1 }).ready, false);
+  const q = computeQuote({ persons: 2, p1_dob: '01-01-1990', p1_sum_insured: 'Rs 5,00,000' });
+  assert.equal(q.ready, false);
+  assert.ok(q.missing.includes('p2_dob'));
+  assert.equal(quoteToColumns(q).quote_status, 'not_ready');
+});
+
+test('maternity is not charged when nobody is eligible', () => {
+  const q = computeQuote({ persons: 1, p1_dob: '01-01-1990', p1_gender: 'Male', p1_sum_insured: 'Rs 5,00,000', p1_maternity: 'Yes' });
+  const m = q.addons.find((a) => a.code === 'maternity');
+  assert.equal(m.amount, 0); assert.ok(m.not_applicable);
+});
+
+test('JWT: valid, tampered and expired tokens', () => {
+  process.env.JWT_SECRET = 's3cret';
+  const tok = signToken({ sub: 'admin' });
+  assert.equal(verifyToken(tok).sub, 'admin');
+  assert.equal(verifyToken(tok.slice(0, -2) + 'xx'), null);
+  process.env.JWT_TTL_HOURS = '-1';
+  assert.equal(verifyToken(signToken({ sub: 'x' })), null);
+  process.env.JWT_TTL_HOURS = '8';
+});
+
+test('short codes are 8 characters, URL safe and differ', () => {
+  const codes = new Set(Array.from({ length: 500 }, () => randomCode(8)));
+  assert.equal(codes.size, 500);
+  codes.forEach((c) => assert.match(c, /^[0-9A-Za-z]{8}$/));
+});
