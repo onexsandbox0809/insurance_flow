@@ -281,3 +281,54 @@ test('greyed-out Aadhaar is not submitted: the flow 1 value is kept for the prop
   await again({ p1_relation: 'Spouse', p1_aadhaar: '' });
   assert.ok(!fake.tables.proposals[0].p1_aadhaar, 'not the proposer: the proposer Aadhaar is not copied');
 });
+
+test('re-submitting with a sum insured above 15 lakh clears the old premium instead of showing it', async () => {
+  const fake = setup();
+  mockOnex();
+  await runFlows();
+  assert.ok(fake.tables.proposals[0].premium_annual > 0);
+  const bad = await flowCall('insured', { headers: KEY, body: { phone_number: PHONE, persons: '1', p1_dob: '1989-05-22', p1_sum_insured: 'Rs 20,00,000' } });
+  assert.equal(bad.json.quote.ready, false, 'no stale premium in the response');
+  assert.match(bad.json.quote_missing[0], /outside the supported range/);
+  assert.equal(bad.json.status, 'draft', 'not "quoted" while the premium cannot be calculated');
+  assert.equal(fake.tables.proposals[0].premium_annual, null);
+  assert.equal(fake.tables.proposals[0].quote_status, 'not_ready');
+  const good = await flowCall('insured', { headers: KEY, body: { phone_number: PHONE, persons: '1', p1_dob: '1989-05-22', p1_sum_insured: '10 lakh' } });
+  assert.equal(good.json.quote.ready, true);
+  assert.ok(good.json.quote.annual > 0);
+  assert.deepEqual(good.json.quote_missing, []);
+});
+
+test('long Supabase URLs are returned next to the short ones', async () => {
+  const fake = setup();
+  mockOnex();
+  const r = await runFlows();
+  const covers = r.covers.json;
+  assert.match(covers.proposal_pdf_url, /^https:\/\/app\.test\/p\/[A-Za-z0-9]{8}$/);
+  assert.match(covers.proposal_pdf_signed_url, /^https:\/\/fake\.storage\/proposal-docs\/HP-.*proposal-HP-.*\.pdf\?token=/);
+  assert.equal(covers.signed_url_valid_hours, 168);
+  const docs = await flowCall('documents', { headers: KEY, body: flow7Body() });
+  docs.json.documents.forEach((d) => {
+    assert.match(d.media_url, /^https:\/\/app\.test\/d\//);
+    assert.match(d.media_signed_url, /^https:\/\/fake\.storage\/proposal-docs\//);
+  });
+  assert.match(docs.json.proposal_pdf_signed_url, /^https:\/\/fake\.storage\//);
+  const q = await call(require('../api/quote'), { method: 'GET', headers: KEY, query: { phone_number: PHONE } });
+  assert.match(q.json.proposal_pdf_signed_url, /^https:\/\/fake\.storage\//);
+  assert.ok(fake.files.size >= 7);
+});
+
+test('rupee-sign amounts work end to end and the PDF prints them as Rs, not ?', async () => {
+  const fake = setup();
+  mockOnex();
+  await flowCall('personal', { headers: KEY, body: { phone_number: PHONE, full_name: 'Asha Rao', dob: '1990-01-01', mobile: '9810011223' } });
+  await flowCall('nominee', { headers: KEY, body: { phone_number: PHONE, nominee_name: 'Ravi' } });
+  const ins = await flowCall('insured', { headers: KEY, body: { phone_number: PHONE, persons: '1', p1_dob: '1990-01-01', p1_sum_insured: '\u20B915,00,000', p1_name: 'Asha Rao' } });
+  assert.equal(ins.json.quote.ready, true);
+  assert.equal(ins.json.quote.total_sum_insured, 1500000);
+  await flowCall('medical', { headers: KEY, body: { phone_number: PHONE, any_condition: 'No' } });
+  const cov = await flowCall('covers', { headers: KEY, body: { phone_number: PHONE, covers: ['daily_cash'], p1_daily_cash: 'Yes', p1_daily_cash_amt: '\u20B91,000/Day' } });
+  assert.equal(cov.json.status, 'quoted');
+  const pdf = [...fake.files.entries()].find(([k]) => k.endsWith('.pdf'))[1].bytes;
+  assert.equal(pdf.subarray(0, 5).toString(), '%PDF-');
+});

@@ -139,3 +139,46 @@ test('submitting the prefilled masked Aadhaar keeps it; typing a new number mask
   assert.equal(normalize('insured', { ...base, p1_aadhaar: 'XXXXXXXX5432' }).patch.p1_aadhaar, 'XXXXXXXX5432');
   assert.equal(normalize('insured', { ...base, p1_aadhaar: '111122223333' }).patch.p1_aadhaar, 'XXXXXXXX3333');
 });
+
+test('sum insured text: rupee sign, Rs, plain, lakh and crore forms are all understood', () => {
+  const { sumInsuredValue } = require('../lib/premium');
+  assert.equal(sumInsuredValue('Rs 10,00,000'), 1000000);
+  assert.equal(sumInsuredValue('\u20B93,00,000'), 300000, 'with the rupee sign');
+  assert.equal(sumInsuredValue('3,00,000'), 300000, 'without any prefix');
+  assert.equal(sumInsuredValue('Rs. 15,00,000/-'), 1500000);
+  assert.equal(sumInsuredValue('10 lakh'), 1000000);
+  assert.equal(sumInsuredValue('7.5L'), 750000);
+  assert.equal(sumInsuredValue('1 crore'), 10000000);
+  assert.equal(sumInsuredValue('5,00,000'), 500000);
+});
+
+test('a sum insured above 15 lakh is reported with the value received, and the premium columns are cleared', () => {
+  const q = computeQuote({ persons: 1, p1_dob: '01-01-1990', p1_sum_insured: 'Rs 20,00,000' });
+  assert.equal(q.ready, false);
+  assert.match(q.missing[0], /value "Rs 20,00,000" is outside the supported range/);
+  const cols = quoteToColumns(q);
+  assert.equal(cols.quote_status, 'not_ready');
+  assert.equal(cols.premium_annual, null);
+  assert.equal(cols.premium_breakdown, null);
+});
+
+test('every amount from Rs 1 lakh to Rs 15 lakh is priced, in both formats, and the price only ever goes up with the cover', () => {
+  const ref = new Date('2026-11-05T06:00:00Z');
+  const base = { persons: 1, p1_dob: '01-01-1990', p1_height: 1.7, p1_weight: 65, p1_occupation: 'Service' };
+  const price = (si) => { const q = computeQuote({ ...base, p1_sum_insured: si }, ref); assert.equal(q.ready, true, String(si)); return q.totals.annual; };
+  assert.equal(price('\u20B93,00,000'), price('3,00,000'));
+  assert.equal(price('3,00,000'), price('Rs 3,00,000'));
+  const amounts = [100000, 200000, 300000, 400000, 500000, 600000, 750000, 800000, 1000000, 1200000, 1250000, 1500000];
+  const prices = amounts.map(price);
+  prices.forEach((p, i) => { if (i) assert.ok(p > prices[i - 1], `${amounts[i]} must cost more than ${amounts[i - 1]}`); });
+  assert.equal(computeQuote({ ...base, p1_sum_insured: '15,00,001' }, ref).ready, false);
+  assert.equal(computeQuote({ ...base, p1_sum_insured: '99,999' }, ref).ready, false);
+});
+
+test('a date of birth that is impossible (future or older than 120 years) stops the quote', () => {
+  const ref = new Date('2026-11-05T06:00:00Z');
+  const row = { persons: 1, p1_sum_insured: '5,00,000' };
+  assert.equal(computeQuote({ ...row, p1_dob: '01-01-2030' }, ref).ready, false);
+  assert.equal(computeQuote({ ...row, p1_dob: '01-01-1890' }, ref).ready, false);
+  assert.equal(computeQuote({ ...row, p1_dob: '01-01-1990' }, ref).ready, true);
+});
