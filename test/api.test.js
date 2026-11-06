@@ -332,3 +332,52 @@ test('rupee-sign amounts work end to end and the PDF prints them as Rs, not ?', 
   const pdf = [...fake.files.entries()].find(([k]) => k.endsWith('.pdf'))[1].bytes;
   assert.equal(pdf.subarray(0, 5).toString(), '%PDF-');
 });
+
+test('GET /api/documents returns short and long links for the PDF and every uploaded file, and can build the PDF', async () => {
+  const fake = setup();
+  mockOnex();
+  const docsApi = require('../api/documents');
+  assert.equal((await call(docsApi, { method: 'GET', query: { phone_number: PHONE } })).status, 401);
+  assert.equal((await call(docsApi, { method: 'GET', headers: KEY, query: { phone_number: '919000011111' } })).status, 404);
+
+  // quote not ready yet -> asking for a PDF is a clear 409
+  await flowCall('personal', { headers: KEY, body: { phone_number: PHONE, full_name: 'Asha Rao', dob: '1990-01-01', mobile: '9810011223' } });
+  const early = await call(docsApi, { method: 'GET', headers: KEY, query: { phone_number: PHONE, generate_pdf: '1' } });
+  assert.equal(early.status, 409);
+  const none = await call(docsApi, { method: 'GET', headers: KEY, query: { phone_number: PHONE } });
+  assert.equal(none.json.proposal_pdf_url, null); assert.deepEqual(none.json.documents, []);
+
+  // finish everything, upload documents
+  await flowCall('nominee', { headers: KEY, body: { phone_number: PHONE, nominee_name: 'Ravi' } });
+  await flowCall('insured', { headers: KEY, body: { phone_number: PHONE, persons: '1', p1_dob: '1990-01-01', p1_sum_insured: '\u20B96,00,000' } });
+  await flowCall('medical', { headers: KEY, body: { phone_number: PHONE, any_condition: 'No' } });
+  await flowCall('covers', { headers: KEY, body: { phone_number: PHONE, covers: [] } });
+  const sent = await flowCall('documents', { headers: KEY, body: flow7Body() });
+  assert.equal(sent.json.stored, 6);
+
+  const r = await call(docsApi, { method: 'GET', headers: KEY, query: { phone_number: PHONE, valid_hours: '24' } });
+  assert.equal(r.status, 200);
+  assert.match(r.json.proposal_pdf_url, /^https:\/\/app\.test\/p\//);
+  assert.match(r.json.proposal_pdf_signed_url, /^https:\/\/fake\.storage\//);
+  assert.equal(r.json.signed_url_valid_hours, 24);
+  assert.equal(r.json.documents.length, 6);
+  r.json.documents.forEach((d) => {
+    assert.match(d.media_url, /^https:\/\/app\.test\/d\/[A-Za-z0-9]{8}$/);
+    assert.match(d.media_signed_url, /^https:\/\/fake\.storage\/proposal-docs\//);
+    assert.ok(d.whatsapp_media_id && d.sha256 && d.file_name);
+  });
+  assert.equal((await call(docsApi, { method: 'GET', headers: KEY, query: { proposal_no: r.json.proposal_no, valid_hours: '99999' } })).json.signed_url_valid_hours, 720, 'capped at 30 days');
+
+  const regen = await call(docsApi, { method: 'POST', headers: KEY, body: { proposal_no: r.json.proposal_no, generate_pdf: true } });
+  assert.equal(regen.status, 200); assert.equal(regen.json.proposal_pdf_url, r.json.proposal_pdf_url, 'same short link after regenerating');
+  assert.ok(fake.files.size >= 7);
+});
+
+test('a media failure says what the media API answered', async () => {
+  setup();
+  mockOnex({ failIds: ['4039060513069724'] });
+  await runFlows();
+  const res = await flowCall('documents', { headers: KEY, body: flow7Body() });
+  const bad = res.json.documents.find((d) => d.status === 'failed');
+  assert.match(bad.error, /media lookup failed \(500\): boom/);
+});
