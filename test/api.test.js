@@ -381,3 +381,73 @@ test('a media failure says what the media API answered', async () => {
   const bad = res.json.documents.find((d) => d.status === 'failed');
   assert.match(bad.error, /media lookup failed \(500\): boom/);
 });
+
+// ---- phone_number is the WABA (business) number; the customer is identified separately ----
+const WABA = '919217090193';
+const CUSTOMER = '919876543210';
+const customerFlow1 = () => flowCall('personal', { headers: KEY, body: { phone_number: CUSTOMER, full_name: 'Asha Rao', dob: '1990-01-01', mobile: '9876543210' } });
+const oneDoc = (extra = {}) => ({ phone_number: WABA, id_proof: [{ sha256: 'x', mime_type: 'image/png', file_name: 'IMG_6952.PNG', id: 1211145944964840 }], ...extra });
+
+test('documents: phone_number is the WABA number, the customer comes from flow_token (their number)', async () => {
+  const fake = setup(); const log = mockOnex();
+  const p = await customerFlow1();
+  const res = await flowCall('documents', { headers: KEY, body: oneDoc({ flow_token: CUSTOMER }) });
+  assert.equal(res.json.proposal_no, p.json.proposal_no, 'attached to the customer proposal');
+  assert.equal(fake.tables.proposals.length, 1, 'no extra proposal under the WABA number');
+  assert.equal(res.json.customer_phone, CUSTOMER);
+  assert.equal(res.json.waba_phone_used, WABA);
+  log.forEach((l) => assert.equal(l[2], WABA, 'the media APIs are asked with the WABA number'));
+  assert.equal(fake.tables.proposal_documents[0].proposal_no, p.json.proposal_no);
+});
+
+test('documents: customer_phone, wa_id and proposal_no in flow_token all work', async () => {
+  const fake = setup(); mockOnex();
+  const p = await customerFlow1();
+  const a = await flowCall('documents', { headers: KEY, body: oneDoc({ customer_phone: CUSTOMER }) });
+  assert.equal(a.json.proposal_no, p.json.proposal_no);
+  const b = await flowCall('documents', { headers: KEY, body: oneDoc({ wa_id: CUSTOMER }) });
+  assert.equal(b.json.proposal_no, p.json.proposal_no);
+  const c = await flowCall('documents', { headers: KEY, body: oneDoc({ flow_token: p.json.proposal_no }) });
+  assert.equal(c.json.proposal_no, p.json.proposal_no);
+  assert.equal(c.json.waba_phone_used, WABA);
+  assert.equal(fake.tables.proposals.length, 1);
+});
+
+test('flows 1 to 6: customer_phone / flow_token identify the customer while phone_number stays the WABA number', async () => {
+  const fake = setup(); mockOnex();
+  const a = await flowCall('personal', { headers: KEY, body: { phone_number: WABA, customer_phone: CUSTOMER, full_name: 'Asha Rao', dob: '1990-01-01', mobile: '9876543210' } });
+  assert.equal(fake.tables.proposals[0].wa_id, CUSTOMER);
+  const n = await flowCall('nominee', { headers: KEY, body: { phone_number: WABA, flow_token: CUSTOMER, nominee_name: 'Ravi' } });
+  assert.equal(n.json.proposal_no, a.json.proposal_no);
+  const m = await flowCall('medical', { headers: KEY, body: { phone_number: WABA, flow_token: a.json.proposal_no, any_condition: 'No' } });
+  assert.equal(m.json.proposal_no, a.json.proposal_no);
+  assert.equal(fake.tables.proposals.length, 1);
+});
+
+test('with WABA_PHONE_NUMBER set: the WABA number is never taken as a customer, and always used for the media APIs', async () => {
+  const fake = setup(); const log = mockOnex();
+  process.env.WABA_PHONE_NUMBER = WABA;
+  try {
+    const refused = await flowCall('documents', { headers: KEY, body: oneDoc({ flow_token: 'unused' }) });
+    assert.equal(refused.status, 400);
+    assert.match(refused.json.error, /WABA \(business\) number/);
+    assert.equal(fake.tables.proposals.length, 0, 'nothing created under the WABA number');
+    const refusedFlow = await flowCall('personal', { headers: KEY, body: { phone_number: WABA, full_name: 'x', dob: '1990-01-01', mobile: '9876543210' } });
+    assert.equal(refusedFlow.status, 400);
+
+    const p = await customerFlow1();
+    const ok = await flowCall('documents', { headers: KEY, body: { ...oneDoc({ flow_token: CUSTOMER }), phone_number: CUSTOMER } });
+    assert.equal(ok.json.proposal_no, p.json.proposal_no);
+    assert.equal(ok.json.waba_phone_used, WABA, 'media calls use WABA_PHONE_NUMBER even if phone_number held something else');
+    log.forEach((l) => assert.equal(l[2], WABA));
+  } finally { delete process.env.WABA_PHONE_NUMBER; }
+});
+
+test('old behaviour still works: a request with only phone_number is treated as the customer', async () => {
+  const fake = setup(); mockOnex();
+  const p = await flowCall('personal', { headers: KEY, body: { phone_number: CUSTOMER, full_name: 'Asha', dob: '1990-01-01', mobile: '9876543210' } });
+  assert.equal(fake.tables.proposals[0].wa_id, CUSTOMER);
+  const d = await flowCall('documents', { headers: KEY, body: { phone_number: CUSTOMER, id_proof: [{ id: '5', mime_type: 'image/png' }] } });
+  assert.equal(d.json.proposal_no, p.json.proposal_no);
+  assert.equal(d.json.waba_phone_used, CUSTOMER);
+});
