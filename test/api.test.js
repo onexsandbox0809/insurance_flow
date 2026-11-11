@@ -451,3 +451,42 @@ test('old behaviour still works: a request with only phone_number is treated as 
   assert.equal(d.json.proposal_no, p.json.proposal_no);
   assert.equal(d.json.waba_phone_used, CUSTOMER);
 });
+
+test('GET /api/prefill?step=... returns the saved data of a step by customer phone number', async () => {
+  const fake = setup();
+  mockOnex();
+  const r = await runFlows();
+  const pf = require('../api/prefill');
+  const get = (query) => call(pf, { method: 'GET', headers: KEY, query });
+
+  const first = await get({ phone_number: PHONE, step: 'personal' });
+  assert.equal(first.status, 200);
+  assert.equal(first.json.found, true); assert.equal(first.json.step, 'personal');
+  assert.equal(first.json.proposal_no, r.personal.json.proposal_no);
+  assert.equal(first.json.step_completed, true);
+  assert.match(first.json.submitted_at, /^\d{2}-\d{2}-\d{4} \d{2}-\d{2}$/);
+  assert.equal(first.json.data.full_name, 'Aditya Kumar');
+  assert.equal(first.json.data.dob, '22-05-1989', 'dates come back as DD-MM-YYYY');
+  assert.equal(first.json.data.pan, 'ANXXXXXXXP');
+  assert.equal(first.json.data.aadhaar, 'XXXXXXXX5432');
+  assert.equal(first.json.data.mobile, '9560458200');
+  assert.ok(!JSON.stringify(first.json).includes('652134215432') && !JSON.stringify(first.json).includes('ANOPC2357P'), 'never a raw identifier');
+  assert.equal(Object.keys(first.json.data).length, 20, 'every flow 1 field is present');
+
+  const nominee = await get({ phone_number: PHONE, step: 'nominee' });
+  assert.equal(nominee.json.data.nominee_name, 'Ankita');
+  const all = await get({ phone_number: PHONE, step: 'all' });
+  assert.equal(all.json.data.full_name, 'Aditya Kumar'); assert.equal(all.json.data.nominee_name, 'Ankita'); assert.equal(all.json.data.persons, 2);
+  assert.equal(all.json.step_completed, null);
+
+  const unknown = await get({ phone_number: '919000011111', step: 'personal' });
+  assert.equal(unknown.json.found, false); assert.equal(unknown.json.data.full_name, null); assert.equal(unknown.json.step_completed, false);
+  assert.equal((await get({ phone_number: PHONE, step: 'nonsense' })).status, 400);
+  assert.equal((await get({ phone_number: PHONE, step: 'documents' })).status, 400);
+  assert.equal((await get({ proposal_no: r.personal.json.proposal_no, step: 'personal' })).json.data.full_name, 'Aditya Kumar', 'proposal_no works without a phone number');
+
+  // the original behaviour is untouched
+  const prefill = await get({ phone_number: PHONE });
+  assert.equal(prefill.json.flow_action_payload.screen, 'INSURED_COUNT');
+  assert.equal(prefill.json.data.p1_name, 'Aditya Kumar');
+});
